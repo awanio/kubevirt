@@ -107,3 +107,10 @@ func IsPPC64() bool {
 	}
 	return false
 }
+
+func IsS390x() bool {
+	if Arch == "s390x" {
+		return true
+	}
+	return false
+}

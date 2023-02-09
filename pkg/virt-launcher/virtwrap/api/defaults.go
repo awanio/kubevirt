@@ -29,6 +29,13 @@ func (d *Defaulter) IsARM64() bool {
 	return false
 }
 
+func (d *Defaulter) IsS390x() bool {
+	if d.Architecture == "s390x" {
+		return true
+	}
+	return false
+}
+
 func (d *Defaulter) SetDefaults_Devices(devices *Devices) {
 
 }

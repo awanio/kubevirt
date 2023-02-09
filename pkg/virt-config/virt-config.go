@@ -45,11 +45,13 @@ const (
 	DefaultAMD64MachineType                         = "q35"
 	DefaultPPC64LEMachineType                       = "pseries"
 	DefaultAARCH64MachineType                       = "virt"
+	DefaultS390XMachineType                         = "s390-ccw-virtio"
 	DefaultCPURequest                               = "100m"
 	DefaultMemoryOvercommit                         = 100
 	DefaultAMD64EmulatedMachines                    = "q35*,pc-q35*"
 	DefaultPPC64LEEmulatedMachines                  = "pseries*"
 	DefaultAARCH64EmulatedMachines                  = "virt*"
+	DefaultS390XEmulatedMachines                    = "s390-ccw-virtio*"
 	DefaultLessPVCSpaceToleration                   = 10
 	DefaultMinimumReservePVCBytes                   = 131072
 	DefaultNodeSelectors                            = ""
@@ -102,6 +104,13 @@ func IsARM64(arch string) bool {
 
 func IsPPC64(arch string) bool {
 	if arch == "ppc64le" {
+		return true
+	}
+	return false
+}
+
+func IsS390x(arch string) bool {
+	if arch == "s390x" {
 		return true
 	}
 	return false

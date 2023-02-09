@@ -1,0 +1,478 @@
+diff --git a/hack/build-go.sh b/hack/build-go.sh
+index b45378fe8..9c429de01 100755
+--- a/hack/build-go.sh
++++ b/hack/build-go.sh
+@@ -40,10 +40,17 @@ else
+ fi
+ 
+ PLATFORM=$(uname -m)
++
+ case ${PLATFORM} in
+ x86_64* | i?86_64* | amd64*)
+     ARCH="amd64"
+     ;;
++s390* | s390x*)
++    ARCH="s390x"
++    ;;
++ppc64* | ppc64le*)
++    ARCH="ppc64le"
++    ;;
+ aarch64* | arm64*)
+     ARCH="arm64"
+     ;;
+diff --git a/hack/builder/Dockerfile b/hack/builder/Dockerfile
+index aaf6dcdd8..c22b2488f 100644
+--- a/hack/builder/Dockerfile
++++ b/hack/builder/Dockerfile
+@@ -1,7 +1,8 @@
+ FROM quay.io/centos/centos:stream9
+ 
+-ARG SONOBUOY_ARCH
+-ARG BAZEL_ARCH
++ARG KUBEVIRT_NO_BAZEL false
++ARG SONOBUOY_ARCH x86_64
++ARG BAZEL_ARCH x86_64
+ 
+ ENV BAZEL_VERSION=5.3.1
+ ENV GIMME_GO_VERSION=1.19.2
+@@ -129,7 +130,12 @@ COPY entrypoint.sh /entrypoint.sh
+ 
+ COPY create_bazel_cache_rcs.sh /create_bazel_cache_rcs.sh
+ 
+-RUN curl -L -o /usr/bin/bazel https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-linux-${BAZEL_ARCH} && \
+-    chmod u+x /usr/bin/bazel
++COPY bazel-${BAZEL_ARCH} /usr/bin/bazel
++
++RUN if [ "${KUBEVIRT_NO_BAZEL}" != "true" ] && [ "${BAZEL_ARCH}" = "x86_64" ]; then \ 
++rm -f /usr/bin/bazel && curl -L -o /usr/bin/bazel https://github.com/bazelbuild/bazel/releases/download/"${BAZEL_VERSION}"/bazel-"${BAZEL_VERSION}"-linux-"${BAZEL_ARCH}"; \
++fi
++
++RUN chmod u+x /usr/bin/bazel
+ 
+ ENTRYPOINT [ "/entrypoint.sh" ]
+diff --git a/hack/builder/build.sh b/hack/builder/build.sh
+index 2cfe90d1f..6de18aa85 100755
+--- a/hack/builder/build.sh
++++ b/hack/builder/build.sh
+@@ -10,6 +10,8 @@ SCRIPT_DIR="$(
+     pwd
+ )"
+ 
++HOST_ARCH="$(uname -m)"
++
+ # shellcheck source=hack/builder/version.sh
+ . "${SCRIPT_DIR}/version.sh"
+ 
+@@ -18,9 +20,11 @@ SCRIPT_DIR="$(
+ # packages on Fedora or by having already run this script earlier,
+ # then we shouldn't alter the existing configuration to avoid the
+ # risk of possibly breaking it
++if [ ${HOST_ARCH} = "x86_64" ]; then 
+ if ! grep -E '^enabled$' /proc/sys/fs/binfmt_misc/qemu-aarch64 2>/dev/null; then
+     ${KUBEVIRT_CRI} run --rm --privileged multiarch/qemu-user-static --reset -p yes
+ fi
++fi
+ 
+ for ARCH in ${ARCHITECTURES}; do
+     case ${ARCH} in
+@@ -34,5 +38,5 @@ for ARCH in ${ARCHITECTURES}; do
+         ;;
+     esac
+     ${KUBEVIRT_CRI} pull --platform="linux/${ARCH}" quay.io/centos/centos:stream9
+-    ${KUBEVIRT_CRI} build --platform="linux/${ARCH}" -t "quay.io/kubevirt/builder:${VERSION}-${ARCH}" --build-arg SONOBUOY_ARCH=${sonobuoy_arch} --build-arg BAZEL_ARCH=${bazel_arch} -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
++    ${KUBEVIRT_CRI} build --platform="linux/${ARCH}" -t "r.awan.app/library/kubevirt/builder:${VERSION}-${ARCH}" --build-arg SONOBUOY_ARCH=${sonobuoy_arch} --build-arg BAZEL_ARCH=${bazel_arch} -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
+ done
+diff --git a/hack/builder/version.sh b/hack/builder/version.sh
+index e2c693190..235dfd9df 100644
+--- a/hack/builder/version.sh
++++ b/hack/builder/version.sh
+@@ -1,3 +1,3 @@
+ VERSION=$(date +"%y%m%d%H%M")-$(git rev-parse --short HEAD)
+ # TODO: reenable ppc64le when new builds are available
+-ARCHITECTURES="amd64 arm64"
++ARCHITECTURES="ppc64le"
+diff --git a/hack/dockerized b/hack/dockerized
+index 5d441a57c..68184ba49 100755
+--- a/hack/dockerized
++++ b/hack/dockerized
+@@ -12,7 +12,13 @@ fi
+ 
+ fail_if_cri_bin_missing
+ 
+-KUBEVIRT_BUILDER_IMAGE="quay.io/kubevirt/builder:2212180911-8818abcfa"
++ARCH=$(uname -m)
++
++KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.59.0"
++
++if [ "${ARCH}" != "x86_64" ]; then
++	KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.59.0-${ARCH}"
++fi
+ 
+ SYNC_OUT=${SYNC_OUT:-true}
+ 
+@@ -22,7 +28,7 @@ SYNC_VENDOR=${SYNC_VENDOR:-false}
+ 
+ TEMPFILE=".rsynctemp"
+ 
+-CONTAINER_ENV="--env HTTP_PROXY=${HTTP_PROXY} --env HTTPS_PROXY=${HTTP_PROXY} --env NO_PROXY=${NO_PROXY}"
++CONTAINER_ENV="--env GOFLAGS=-buildvcs=false --env HTTP_PROXY=${HTTP_PROXY} --env HTTPS_PROXY=${HTTP_PROXY} --env NO_PROXY=${NO_PROXY}"
+ 
+ # Be less verbose with bazel
+ # For ppc64le the bazel server seems to be running out of memory in the Travis CI, so forcing no concurrent jobs to be run
+@@ -145,15 +151,20 @@ if [ -n "$($KUBEVIRT_CRI ps --format '{{.Names}}' | grep ${BUILDER}-bazel-server
+ fi
+ 
+ # Ensure that a bazel server is running
++# git config --global --add safe.directory /root/go/src/kubevirt.io/kubevirt
+ if [ -z "$($KUBEVIRT_CRI ps --format '{{.Names}}' | grep ${BUILDER}-bazel-server)" ]; then
+     $KUBEVIRT_CRI run ${CONTAINER_ENV} --ulimit nofile=10000:10000 --network host -d ${volumes} --security-opt "label=disable" --name ${BUILDER}-bazel-server -w "/root/go/src/kubevirt.io/kubevirt" --rm ${KUBEVIRT_BUILDER_IMAGE} hack/bazel-server.sh
+ fi
+ 
++echo $KUBEVIRT_CRI run ${CONTAINER_ENV} --ulimit nofile=10000:10000 --network host -d ${volumes} --security-opt "label=disable" --name ${BUILDER}-bazel-server -w "/root/go/src/kubevirt.io/kubevirt" --rm ${KUBEVIRT_BUILDER_IMAGE} hack/bazel-server.sh
++
+ # Update cert trust, if custom is provided
+ if [ -n "$DOCKER_CA_CERT_FILE" ] && [ -f "$DOCKER_CA_CERT_FILE" ]; then
+     $KUBEVIRT_CRI exec ${CONTAINER_ENV} ${BUILDER}-bazel-server /entrypoint.sh "/usr/bin/update-ca-trust"
+ fi
+ 
++echo $KUBEVIRT_CRI exec ${CONTAINER_ENV} ${USE_TTY} ${BUILDER}-bazel-server /entrypoint.sh "$@"
++
+ # Run the command
+ test -t 1 && USE_TTY="-it"
+ if ! $KUBEVIRT_CRI exec ${CONTAINER_ENV} ${USE_TTY} ${BUILDER}-bazel-server /entrypoint.sh "$@"; then
+diff --git a/hack/go-build-functests.sh b/hack/go-build-functests.sh
+index 24779d122..04f526262 100755
+--- a/hack/go-build-functests.sh
++++ b/hack/go-build-functests.sh
+@@ -27,6 +27,12 @@ case ${PLATFORM} in
+ x86_64* | i?86_64* | amd64*)
+     ARCH="amd64"
+     ;;
++s390* | s390x*)
++    ARCH="s390x"
++    ;;
++ppc64* | ppc64le*)
++    ARCH="ppc64le"
++    ;;
+ aarch64* | arm64*)
+     ARCH="arm64"
+     ;;
+diff --git a/pkg/virt-api/webhooks/mutating-webhook/mutators/vm-mutator_test.go b/pkg/virt-api/webhooks/mutating-webhook/mutators/vm-mutator_test.go
+index 32d8bc4ea..707ea3ddf 100644
+--- a/pkg/virt-api/webhooks/mutating-webhook/mutators/vm-mutator_test.go
++++ b/pkg/virt-api/webhooks/mutating-webhook/mutators/vm-mutator_test.go
+@@ -137,6 +137,8 @@ var _ = Describe("VirtualMachine Mutator", func() {
+ 			Expect(vmSpec.Template.Spec.Domain.Machine.Type).To(Equal("pseries"))
+ 		} else if webhooks.IsARM64() {
+ 			Expect(vmSpec.Template.Spec.Domain.Machine.Type).To(Equal("virt"))
++		} else if webhooks.IsS390x() {
++			Expect(vmSpec.Template.Spec.Domain.Machine.Type).To(Equal("s390-ccw-virtio"))
+ 		} else {
+ 			Expect(vmSpec.Template.Spec.Domain.Machine.Type).To(Equal("q35"))
+ 		}
+diff --git a/pkg/virt-api/webhooks/mutating-webhook/mutators/vmi-mutator_test.go b/pkg/virt-api/webhooks/mutating-webhook/mutators/vmi-mutator_test.go
+index 6b0cba105..12d09c214 100644
+--- a/pkg/virt-api/webhooks/mutating-webhook/mutators/vmi-mutator_test.go
++++ b/pkg/virt-api/webhooks/mutating-webhook/mutators/vmi-mutator_test.go
+@@ -198,6 +198,7 @@ var _ = Describe("VirtualMachineInstance Mutator", func() {
+ 		Entry("on amd64", "amd64", v1.DefaultCPUModel),
+ 		Entry("on arm64", "arm64", v1.CPUModeHostPassthrough),
+ 		Entry("on ppc64le", "ppc64le", v1.DefaultCPUModel),
++		Entry("on s390x", "s390x", v1.DefaultCPUModel),
+ 	)
+ 
+ 	DescribeTable("should apply configurable defaults on VMI create", func(arch string, cpuModel string) {
+diff --git a/pkg/virt-api/webhooks/utils.go b/pkg/virt-api/webhooks/utils.go
+index 816a6beb3..61f02bd70 100644
+--- a/pkg/virt-api/webhooks/utils.go
++++ b/pkg/virt-api/webhooks/utils.go
+@@ -107,3 +107,10 @@ func IsPPC64() bool {
+ 	}
+ 	return false
+ }
++
++func IsS390x() bool {
++	if Arch == "s390x" {
++		return true
++	}
++	return false
++}
+diff --git a/pkg/virt-config/configuration.go b/pkg/virt-config/configuration.go
+index 06ddcd1a7..f07f7a48d 100644
+--- a/pkg/virt-config/configuration.go
++++ b/pkg/virt-config/configuration.go
+@@ -281,6 +281,9 @@ func getCPUArchSpecificDefault(cpuArch string) (string, string, []string) {
+ 	case "ppc64le":
+ 		emulatedMachinesDefault := strings.Split(DefaultPPC64LEEmulatedMachines, ",")
+ 		return DefaultARCHOVMFPath, DefaultPPC64LEMachineType, emulatedMachinesDefault
++	case "s390x":
++		emulatedMachinesDefault := strings.Split(DefaultS390XEmulatedMachines, ",")
++		return DefaultARCHOVMFPath, DefaultS390XMachineType, emulatedMachinesDefault
+ 	default:
+ 		emulatedMachinesDefault := strings.Split(DefaultAMD64EmulatedMachines, ",")
+ 		return DefaultARCHOVMFPath, DefaultAMD64MachineType, emulatedMachinesDefault
+diff --git a/pkg/virt-config/virt-config.go b/pkg/virt-config/virt-config.go
+index 16de6cea3..75fa1c1d7 100644
+--- a/pkg/virt-config/virt-config.go
++++ b/pkg/virt-config/virt-config.go
+@@ -45,11 +45,13 @@ const (
+ 	DefaultAMD64MachineType                         = "q35"
+ 	DefaultPPC64LEMachineType                       = "pseries"
+ 	DefaultAARCH64MachineType                       = "virt"
++	DefaultS390XMachineType                         = "s390-ccw-virtio"
+ 	DefaultCPURequest                               = "100m"
+ 	DefaultMemoryOvercommit                         = 100
+ 	DefaultAMD64EmulatedMachines                    = "q35*,pc-q35*"
+ 	DefaultPPC64LEEmulatedMachines                  = "pseries*"
+ 	DefaultAARCH64EmulatedMachines                  = "virt*"
++	DefaultS390XEmulatedMachines                    = "s390-ccw-virtio*"
+ 	DefaultLessPVCSpaceToleration                   = 10
+ 	DefaultMinimumReservePVCBytes                   = 131072
+ 	DefaultNodeSelectors                            = ""
+@@ -107,6 +109,13 @@ func IsPPC64(arch string) bool {
+ 	return false
+ }
+ 
++func IsS390x(arch string) bool {
++	if arch == "s390x" {
++		return true
++	}
++	return false
++}
++
+ func (c *ClusterConfig) GetMemBalloonStatsPeriod() uint32 {
+ 	return *c.GetConfig().MemBalloonStatsPeriod
+ }
+diff --git a/pkg/virt-controller/services/template.go b/pkg/virt-controller/services/template.go
+index e23c9a0b0..22c8946eb 100644
+--- a/pkg/virt-controller/services/template.go
++++ b/pkg/virt-controller/services/template.go
+@@ -138,6 +138,7 @@ type TemplateService interface {
+ 	GetLauncherImage() string
+ 	IsPPC64() bool
+ 	IsARM64() bool
++	IsS390x() bool
+ }
+ 
+ type templateService struct {
+@@ -276,6 +277,10 @@ func (t *templateService) IsARM64() bool {
+ 	return t.clusterConfig.GetClusterCPUArch() == "arm64"
+ }
+ 
++func (t *templateService) IsS390x() bool {
++	return t.clusterConfig.GetClusterCPUArch() == "s390-ccw-virtio"
++}
++
+ func generateQemuTimeoutWithJitter(qemuTimeoutBaseSeconds int) string {
+ 	timeout := rand.Intn(qemuTimeoutJitterRange) + qemuTimeoutBaseSeconds
+ 
+diff --git a/pkg/virt-handler/setsched.go b/pkg/virt-handler/setsched.go
+index 5f2e7b229..1ef746dff 100644
+--- a/pkg/virt-handler/setsched.go
++++ b/pkg/virt-handler/setsched.go
+@@ -1,4 +1,4 @@
+-//go:build (linux && amd64) || (linux && arm64)
++//go:build (linux && amd64) || (linux && arm64) || (linux && ppc64le) || (linux && s390x)
+ 
+ package virthandler
+ 
+diff --git a/pkg/virt-launcher/virtwrap/api/defaults.go b/pkg/virt-launcher/virtwrap/api/defaults.go
+index 0dd319f14..2cc7dbad1 100644
+--- a/pkg/virt-launcher/virtwrap/api/defaults.go
++++ b/pkg/virt-launcher/virtwrap/api/defaults.go
+@@ -29,6 +29,13 @@ func (d *Defaulter) IsARM64() bool {
+ 	return false
+ }
+ 
++func (d *Defaulter) IsS390x() bool {
++	if d.Architecture == "s390x" {
++		return true
++	}
++	return false
++}
++
+ func (d *Defaulter) SetDefaults_Devices(devices *Devices) {
+ 
+ }
+diff --git a/pkg/virt-launcher/virtwrap/converter/converter.go b/pkg/virt-launcher/virtwrap/converter/converter.go
+index 2b7a7a0fd..a3ec713e8 100644
+--- a/pkg/virt-launcher/virtwrap/converter/converter.go
++++ b/pkg/virt-launcher/virtwrap/converter/converter.go
+@@ -138,6 +138,13 @@ func isARM64(arch string) bool {
+ 	return false
+ }
+ 
++func isS390x(arch string) bool {
++	if arch == "s390x" {
++		return true
++	}
++	return false
++}
++
+ func Convert_v1_Disk_To_api_Disk(c *ConverterContext, diskDevice *v1.Disk, disk *api.Disk, prefixMap map[string]deviceNamer, numQueues *uint, volumeStatusMap map[string]v1.VolumeStatus) error {
+ 	if diskDevice.Disk != nil {
+ 		var unit int
+@@ -169,6 +176,10 @@ func Convert_v1_Disk_To_api_Disk(c *ConverterContext, diskDevice *v1.Disk, disk
+ 		}
+ 		if diskDevice.Disk.Bus == v1.DiskBusVirtio {
+ 			disk.Model = translateModel(c, v1.VirtIO)
++
++			if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++				disk.Model = "virtio"
++			}
+ 		}
+ 		disk.ReadOnly = toApiReadOnly(diskDevice.Disk.ReadOnly)
+ 		disk.Serial = diskDevice.Serial
+@@ -807,6 +818,11 @@ func Convert_v1_DownwardMetricSource_To_api_Disk(disk *api.Disk, c *ConverterCon
+ 	}
+ 	// This disk always needs `virtio`. Validation ensures that bus is unset or is already virtio
+ 	disk.Model = translateModel(c, v1.VirtIO)
++
++	if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++		disk.Model = "virtio"
++	}
++
+ 	disk.Source = api.DiskSource{
+ 		File: config.DownwardMetricDisk,
+ 	}
+@@ -896,6 +912,10 @@ func Convert_v1_Rng_To_api_Rng(_ *v1.Rng, rng *api.Rng, c *ConverterContext) err
+ 	// default rng model for KVM/QEMU virtualization
+ 	rng.Model = translateModel(c, v1.VirtIO)
+ 
++	if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++		rng.Model = "virtio"
++	}
++
+ 	// default backend model, random
+ 	rng.Backend = &api.RngBackend{
+ 		Model: "random",
+@@ -1131,6 +1151,11 @@ func ConvertV1ToAPIBalloning(source *v1.Devices, ballooning *api.MemBalloon, c *
+ 		ballooning.Stats = nil
+ 	} else {
+ 		ballooning.Model = translateModel(c, v1.VirtIO)
++
++		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++			ballooning.Model = "virtio"
++		}
++
+ 		if c.MemBalloonStatsPeriod != 0 {
+ 			ballooning.Stats = &api.Stats{Period: c.MemBalloonStatsPeriod}
+ 		}
+@@ -1156,7 +1181,7 @@ func isUSBNeeded(c *ConverterContext, vmi *v1.VirtualMachineInstance) bool {
+ 	//In ppc64le usb devices like mouse / keyboard are set by default,
+ 	//so we can't disable the controller otherwise we run into the following error:
+ 	//"unsupported configuration: USB is disabled for this domain, but USB devices are present in the domain XML"
+-	if !isAMD64(c.Architecture) {
++	if !isAMD64(c.Architecture) && !isS390x(c.Architecture) {
+ 		return true
+ 	}
+ 
+@@ -1601,10 +1626,15 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
+ 	}
+ 
+ 	if needsSCSIControler(vmi) {
++		scsiModel := translateModel(c, v1.VirtIO)
++		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++			scsiModel = "virtio-scsi"
++		}
++
+ 		scsiController := api.Controller{
+ 			Type:   "scsi",
+ 			Index:  "0",
+-			Model:  translateModel(c, v1.VirtIO),
++			Model:  scsiModel,
+ 			Driver: controllerDriver,
+ 		}
+ 		if useIOThreads {
+@@ -1689,10 +1719,16 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
+ 
+ 	if vmi.Spec.Domain.Devices.AutoattachSerialConsole == nil || *vmi.Spec.Domain.Devices.AutoattachSerialConsole == true {
+ 		// Add mandatory console device
++		serialModel := translateModel(c, v1.VirtIO)
++
++		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++			serialModel = "virtio"
++		}
++
+ 		domain.Spec.Devices.Controllers = append(domain.Spec.Devices.Controllers, api.Controller{
+ 			Type:   "virtio-serial",
+ 			Index:  "0",
+-			Model:  translateModel(c, v1.VirtIO),
++			Model:  serialModel,
+ 			Driver: controllerDriver,
+ 		})
+ 
+@@ -1752,6 +1788,14 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
+ 					Type: "keyboard",
+ 				},
+ 			)
++		} else if isS390x(c.Architecture) {
++			domain.Spec.Devices.Video = []api.Video{
++				{
++					Model: api.VideoModel{
++						Type:  "none",
++					},
++				},
++			}
+ 		} else {
+ 			domain.Spec.Devices.Video = []api.Video{
+ 				{
+diff --git a/pkg/virt-launcher/virtwrap/converter/network.go b/pkg/virt-launcher/virtwrap/converter/network.go
+index 96f562f08..a6072de59 100644
+--- a/pkg/virt-launcher/virtwrap/converter/network.go
++++ b/pkg/virt-launcher/virtwrap/converter/network.go
+@@ -56,13 +56,31 @@ func createDomainInterfaces(vmi *v1.VirtualMachineInstance, domain *api.Domain,
+ 		}
+ 
+ 		ifaceType := GetInterfaceType(&vmi.Spec.Domain.Devices.Interfaces[i])
++		
++		domainIfaceModel := translateModel(c, ifaceType)
++		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++			domainIfaceModel = "virtio"
++		}
++
+ 		domainIface := api.Interface{
+ 			Model: &api.Model{
+-				Type: translateModel(c, ifaceType),
++				Type: domainIfaceModel,
+ 			},
+ 			Alias: api.NewUserDefinedAlias(iface.Name),
+ 		}
+ 
++		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
++			addr := domainIface.Address
++
++			if addr == nil {
++				addr = &api.Address{}
++			}
++
++			addr.Type = "ccw"
++
++			domainIface.Address = addr
++		}
++
+ 		// if AllowEmulation unset and at least one NIC model is virtio,
+ 		// /dev/vhost-net must be present as we should have asked for it.
+ 		if ifaceType == v1.VirtIO && virtioNetProhibited {
+@@ -96,7 +114,9 @@ func createDomainInterfaces(vmi *v1.VirtualMachineInstance, domain *api.Domain,
+ 			if iface.BootOrder != nil {
+ 				domainIface.BootOrder = &api.BootOrder{Order: *iface.BootOrder}
+ 			} else {
+-				domainIface.Rom = &api.Rom{Enabled: "no"}
++				if c.VirtualMachine.Spec.Domain.Machine.Type != "s390-ccw-virtio" {
++					domainIface.Rom = &api.Rom{Enabled: "no"}
++				}
+ 			}
+ 		} else if iface.Slirp != nil {
+ 			domainIface.Type = "user"
+@@ -127,7 +147,9 @@ func createDomainInterfaces(vmi *v1.VirtualMachineInstance, domain *api.Domain,
+ 
+ 		if c.UseLaunchSecurity {
+ 			// It's necessary to disable the iPXE option ROM as iPXE is not aware of SEV
+-			domainIface.Rom = &api.Rom{Enabled: "no"}
++			if c.VirtualMachine.Spec.Domain.Machine.Type != "s390-ccw-virtio" {
++				domainIface.Rom = &api.Rom{Enabled: "no"}
++			}
+ 			if ifaceType == v1.VirtIO {
+ 				if domainIface.Driver != nil {
+ 					domainIface.Driver.IOMMU = "on"

@@ -138,6 +138,13 @@ func isARM64(arch string) bool {
 	return false
 }
 
+func isS390x(arch string) bool {
+	if arch == "s390x" {
+		return true
+	}
+	return false
+}
+
 func Convert_v1_Disk_To_api_Disk(c *ConverterContext, diskDevice *v1.Disk, disk *api.Disk, prefixMap map[string]deviceNamer, numQueues *uint, volumeStatusMap map[string]v1.VolumeStatus) error {
 	if diskDevice.Disk != nil {
 		var unit int
@@ -169,6 +176,10 @@ func Convert_v1_Disk_To_api_Disk(c *ConverterContext, diskDevice *v1.Disk, disk 
 		}
 		if diskDevice.Disk.Bus == v1.DiskBusVirtio {
 			disk.Model = translateModel(c, v1.VirtIO)
+
+			if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+				disk.Model = "virtio"
+			}
 		}
 		disk.ReadOnly = toApiReadOnly(diskDevice.Disk.ReadOnly)
 		disk.Serial = diskDevice.Serial
@@ -807,6 +818,11 @@ func Convert_v1_DownwardMetricSource_To_api_Disk(disk *api.Disk, c *ConverterCon
 	}
 	// This disk always needs `virtio`. Validation ensures that bus is unset or is already virtio
 	disk.Model = translateModel(c, v1.VirtIO)
+
+	if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+		disk.Model = "virtio"
+	}
+
 	disk.Source = api.DiskSource{
 		File: config.DownwardMetricDisk,
 	}
@@ -895,6 +911,10 @@ func Convert_v1_Rng_To_api_Rng(_ *v1.Rng, rng *api.Rng, c *ConverterContext) err
 
 	// default rng model for KVM/QEMU virtualization
 	rng.Model = translateModel(c, v1.VirtIO)
+
+	if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+		rng.Model = "virtio"
+	}
 
 	// default backend model, random
 	rng.Backend = &api.RngBackend{
@@ -1131,6 +1151,11 @@ func ConvertV1ToAPIBalloning(source *v1.Devices, ballooning *api.MemBalloon, c *
 		ballooning.Stats = nil
 	} else {
 		ballooning.Model = translateModel(c, v1.VirtIO)
+
+		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+			ballooning.Model = "virtio"
+		}
+
 		if c.MemBalloonStatsPeriod != 0 {
 			ballooning.Stats = &api.Stats{Period: c.MemBalloonStatsPeriod}
 		}
@@ -1156,7 +1181,7 @@ func isUSBNeeded(c *ConverterContext, vmi *v1.VirtualMachineInstance) bool {
 	//In ppc64le usb devices like mouse / keyboard are set by default,
 	//so we can't disable the controller otherwise we run into the following error:
 	//"unsupported configuration: USB is disabled for this domain, but USB devices are present in the domain XML"
-	if !isAMD64(c.Architecture) {
+	if !isAMD64(c.Architecture) && !isS390x(c.Architecture) {
 		return true
 	}
 
@@ -1601,10 +1626,15 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 	}
 
 	if needsSCSIControler(vmi) {
+		scsiModel := translateModel(c, v1.VirtIO)
+		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+			scsiModel = "virtio-scsi"
+		}
+
 		scsiController := api.Controller{
 			Type:   "scsi",
 			Index:  "0",
-			Model:  translateModel(c, v1.VirtIO),
+			Model:  scsiModel,
 			Driver: controllerDriver,
 		}
 		if useIOThreads {
@@ -1689,10 +1719,16 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 
 	if vmi.Spec.Domain.Devices.AutoattachSerialConsole == nil || *vmi.Spec.Domain.Devices.AutoattachSerialConsole == true {
 		// Add mandatory console device
+		serialModel := translateModel(c, v1.VirtIO)
+
+		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+			serialModel = "virtio"
+		}
+
 		domain.Spec.Devices.Controllers = append(domain.Spec.Devices.Controllers, api.Controller{
 			Type:   "virtio-serial",
 			Index:  "0",
-			Model:  translateModel(c, v1.VirtIO),
+			Model:  serialModel,
 			Driver: controllerDriver,
 		})
 
@@ -1752,6 +1788,14 @@ func Convert_v1_VirtualMachineInstance_To_api_Domain(vmi *v1.VirtualMachineInsta
 					Type: "keyboard",
 				},
 			)
+		} else if isS390x(c.Architecture) {
+			domain.Spec.Devices.Video = []api.Video{
+				{
+					Model: api.VideoModel{
+						Type:  "none",
+					},
+				},
+			}
 		} else {
 			domain.Spec.Devices.Video = []api.Video{
 				{

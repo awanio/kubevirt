@@ -1,0 +1,23 @@
+FROM quay.io/centos/centos:stream9
+
+RUN yum install -y curl --allowerasing
+
+RUN yum install -y acl curl vim-minimal \
+    coreutils-single glibc-minimal-langpack libcurl-minimal \
+    libvirt-client.ppc64le \
+    #libvirt-daemon-driver-qemu.ppc64le \
+    #qemu-kvm-core.ppc64le \
+    qemu-ga-win qemu-guest-agent qemu-img \
+    ethtool findutils iptables nftables nmap-ncat procps-ng selinux-policy selinux-policy-targeted tar xorriso
+
+COPY ./virt-launcher-v0.59.0-linux-ppc64le /usr/bin/virt-launcher
+COPY ./nsswitch.conf /etc/nsswitch.conf
+COPY ./virtqemud.conf /etc/libvirt/libvirtd.conf
+COPY ./qemu.conf /etc/libvirt/qemu.conf
+COPY ./container-disk-v0.59.0-linux-ppc64le /usr/bin/container-disk
+COPY ./node-labeller/node-labeller.sh /usr/bin/node-labeller.sh
+COPY ./virt-freezer-v0.59.0-linux-ppc64le /usr/bin/virt-freezer
+COPY ./virt-launcher-monitor-v0.59.0-linux-ppc64le /usr/bin/virt-launcher-monitor
+COPY ./virt-probe-v0.59.0-linux-ppc64le /usr/bin/virt-probe
+
+CMD ["virt-launcher"]

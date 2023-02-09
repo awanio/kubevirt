@@ -56,11 +56,29 @@ func createDomainInterfaces(vmi *v1.VirtualMachineInstance, domain *api.Domain, 
 		}
 
 		ifaceType := GetInterfaceType(&vmi.Spec.Domain.Devices.Interfaces[i])
+		
+		domainIfaceModel := translateModel(c, ifaceType)
+		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+			domainIfaceModel = "virtio"
+		}
+
 		domainIface := api.Interface{
 			Model: &api.Model{
-				Type: translateModel(c, ifaceType),
+				Type: domainIfaceModel,
 			},
 			Alias: api.NewUserDefinedAlias(iface.Name),
+		}
+
+		if c.Architecture == "s390x" && c.VirtualMachine.Spec.Domain.Machine.Type == "s390-ccw-virtio" {
+			addr := domainIface.Address
+
+			if addr == nil {
+				addr = &api.Address{}
+			}
+
+			addr.Type = "ccw"
+
+			domainIface.Address = addr
 		}
 
 		// if AllowEmulation unset and at least one NIC model is virtio,
@@ -96,7 +114,9 @@ func createDomainInterfaces(vmi *v1.VirtualMachineInstance, domain *api.Domain, 
 			if iface.BootOrder != nil {
 				domainIface.BootOrder = &api.BootOrder{Order: *iface.BootOrder}
 			} else {
-				domainIface.Rom = &api.Rom{Enabled: "no"}
+				if c.VirtualMachine.Spec.Domain.Machine.Type != "s390-ccw-virtio" {
+					domainIface.Rom = &api.Rom{Enabled: "no"}
+				}
 			}
 		} else if iface.Slirp != nil {
 			domainIface.Type = "user"
@@ -127,7 +147,9 @@ func createDomainInterfaces(vmi *v1.VirtualMachineInstance, domain *api.Domain, 
 
 		if c.UseLaunchSecurity {
 			// It's necessary to disable the iPXE option ROM as iPXE is not aware of SEV
-			domainIface.Rom = &api.Rom{Enabled: "no"}
+			if c.VirtualMachine.Spec.Domain.Machine.Type != "s390-ccw-virtio" {
+				domainIface.Rom = &api.Rom{Enabled: "no"}
+			}
 			if ifaceType == v1.VirtIO {
 				if domainIface.Driver != nil {
 					domainIface.Driver.IOMMU = "on"

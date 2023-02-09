@@ -1,0 +1,19 @@
+FROM quay.io/centos/centos:stream9
+
+RUN yum install -y curl --allowerasing
+
+RUN yum install -y acl curl vim \
+    coreutils-single glibc-minimal-langpack libcurl-minimal \
+    qemu-img.ppc64le findutils iproute iptables nftables procps-ng selinux-policy selinux-policy-targeted tar util-linux xorriso
+
+RUN groupadd -g 107 qemu && useradd -u 107 -g 107 -Ms /bin/sh qemu
+
+COPY ./virt-handler-v0.59.0-linux-ppc64le /usr/bin/virt-handler
+COPY ./container-disk-v0.59.0-linux-ppc64le /usr/bin/container-disk
+COPY ./virt-chroot-v0.59.0-linux-ppc64le /usr/bin/virt-chroot
+COPY ./virt_launcher.cil /virt_launcher.cil
+COPY ./ipv4-nat.nft /etc/nftables/ipv4-nat.nft
+COPY ./ipv6-nat.nft /etc/nftables/ipv6-nat.nft
+COPY ./.version /.version
+
+CMD ["virt-handler"]

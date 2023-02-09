@@ -12,7 +12,13 @@ fi
 
 fail_if_cri_bin_missing
 
-KUBEVIRT_BUILDER_IMAGE="quay.io/kubevirt/builder:2212180911-8818abcfa"
+ARCH=$(uname -m)
+
+KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.59.0"
+
+if [ "${ARCH}" != "x86_64" ]; then
+	KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.59.0-${ARCH}"
+fi
 
 SYNC_OUT=${SYNC_OUT:-true}
 
@@ -22,7 +28,7 @@ SYNC_VENDOR=${SYNC_VENDOR:-false}
 
 TEMPFILE=".rsynctemp"
 
-CONTAINER_ENV="--env HTTP_PROXY=${HTTP_PROXY} --env HTTPS_PROXY=${HTTP_PROXY} --env NO_PROXY=${NO_PROXY}"
+CONTAINER_ENV="--env GOFLAGS=-buildvcs=false --env HTTP_PROXY=${HTTP_PROXY} --env HTTPS_PROXY=${HTTP_PROXY} --env NO_PROXY=${NO_PROXY}"
 
 # Be less verbose with bazel
 # For ppc64le the bazel server seems to be running out of memory in the Travis CI, so forcing no concurrent jobs to be run
@@ -145,14 +151,19 @@ if [ -n "$($KUBEVIRT_CRI ps --format '{{.Names}}' | grep ${BUILDER}-bazel-server
 fi
 
 # Ensure that a bazel server is running
+# git config --global --add safe.directory /root/go/src/kubevirt.io/kubevirt
 if [ -z "$($KUBEVIRT_CRI ps --format '{{.Names}}' | grep ${BUILDER}-bazel-server)" ]; then
     $KUBEVIRT_CRI run ${CONTAINER_ENV} --ulimit nofile=10000:10000 --network host -d ${volumes} --security-opt "label=disable" --name ${BUILDER}-bazel-server -w "/root/go/src/kubevirt.io/kubevirt" --rm ${KUBEVIRT_BUILDER_IMAGE} hack/bazel-server.sh
 fi
+
+echo $KUBEVIRT_CRI run ${CONTAINER_ENV} --ulimit nofile=10000:10000 --network host -d ${volumes} --security-opt "label=disable" --name ${BUILDER}-bazel-server -w "/root/go/src/kubevirt.io/kubevirt" --rm ${KUBEVIRT_BUILDER_IMAGE} hack/bazel-server.sh
 
 # Update cert trust, if custom is provided
 if [ -n "$DOCKER_CA_CERT_FILE" ] && [ -f "$DOCKER_CA_CERT_FILE" ]; then
     $KUBEVIRT_CRI exec ${CONTAINER_ENV} ${BUILDER}-bazel-server /entrypoint.sh "/usr/bin/update-ca-trust"
 fi
+
+echo $KUBEVIRT_CRI exec ${CONTAINER_ENV} ${USE_TTY} ${BUILDER}-bazel-server /entrypoint.sh "$@"
 
 # Run the command
 test -t 1 && USE_TTY="-it"
