@@ -27,6 +27,12 @@ case ${PLATFORM} in
 x86_64* | i?86_64* | amd64*)
     ARCH="amd64"
     ;;
+s390* | s390x*)
+    ARCH="s390x"
+    ;;
+ppc64* | ppc64le*)
+    ARCH="ppc64le"
+    ;;
 aarch64* | arm64*)
     ARCH="arm64"
     ;;

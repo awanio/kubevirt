@@ -12,7 +12,13 @@ fi
 
 fail_if_cri_bin_missing
 
-KUBEVIRT_BUILDER_IMAGE="quay.io/kubevirt/builder:2209141252-da37250e4"
+ARCH=$(uname -m)
+
+KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.58.0"
+
+if [ "${ARCH}" != "x86_64" ]; then
+	KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.58.0-${ARCH}"
+fi
 
 SYNC_OUT=${SYNC_OUT:-true}
 

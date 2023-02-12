@@ -1,13 +1,14 @@
 FROM quay.io/centos/centos:stream8
 
-ARG SONOBUOY_ARCH
-ARG BAZEL_ARCH
+ARG KUBEVIRT_NO_BAZEL false
+ARG SONOBUOY_ARCH x86_64
+ARG BAZEL_ARCH x86_64
 
-ENV BAZEL_VERSION=4.2.1
+ENV BAZEL_VERSION=5.2.0
 ENV GIMME_GO_VERSION=1.17.8
 ENV GRADLE_VERSION=6.6
 ENV OPERATOR_COURIER_VERSION=2.1.11
-ENV SONOBUOY_VERSION=0.19.0
+ENV SONOBUOY_VERSION=0.56.9
 ENV GOLANGCI_LINT_VERSION=v1.46.2
 
 ENV KUBEVIRT_CREATE_BAZELRCS=false
@@ -128,7 +129,12 @@ COPY entrypoint.sh /entrypoint.sh
 
 COPY create_bazel_cache_rcs.sh /create_bazel_cache_rcs.sh
 
-RUN curl -L -o /usr/bin/bazel https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-linux-${BAZEL_ARCH} && \
-    chmod u+x /usr/bin/bazel
+COPY bazel-${BAZEL_ARCH} /usr/bin/bazel
+
+RUN if [ "${KUBEVIRT_NO_BAZEL}" != "true" ] && [ "${BAZEL_ARCH}" = "x86_64" ]; then \ 
+rm -f /usr/bin/bazel && curl -L -o /usr/bin/bazel https://github.com/bazelbuild/bazel/releases/download/"${BAZEL_VERSION}"/bazel-"${BAZEL_VERSION}"-linux-"${BAZEL_ARCH}"; \
+fi
+
+RUN chmod u+x /usr/bin/bazel
 
 ENTRYPOINT [ "/entrypoint.sh" ]

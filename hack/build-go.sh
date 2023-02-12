@@ -44,6 +44,12 @@ case ${PLATFORM} in
 x86_64* | i?86_64* | amd64*)
     ARCH="amd64"
     ;;
+s390* | s390x*)
+    ARCH="s390x"
+    ;;
+ppc64* | ppc64le*)
+    ARCH="ppc64le"
+    ;;
 aarch64* | arm64*)
     ARCH="arm64"
     ;;
@@ -66,10 +72,11 @@ if [ $# -eq 0 ]; then
         )
     else
         (
-            go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./pkg/...
+	    go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./pkg/...
             GO111MODULE=off go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./staging/src/kubevirt.io/...
         )
-        (
+        (   
+	    echo "go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./tests/..."
             go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./tests/...
         )
     fi

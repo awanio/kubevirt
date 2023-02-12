@@ -1,0 +1,9 @@
+FROM quay.io/centos/centos:stream8
+
+COPY ./virt-controller-v0.58.0-linux-ppc64le /usr/bin/virt-controller
+
+RUN groupadd -g 1001 nonroot-user && useradd -u 1001 -g 1001 -Ms /bin/sh nonroot-user
+
+USER 1001
+
+CMD ["virt-controller"]

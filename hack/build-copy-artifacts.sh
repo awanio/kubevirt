@@ -22,6 +22,8 @@ set -e
 source hack/common.sh
 source hack/config.sh
 
+echo "HEREIT"
+
 if [ $# -eq 0 ]; then
     args=$docker_images
 else

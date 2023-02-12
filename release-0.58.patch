@@ -1,0 +1,1732 @@
+diff --git a/_out_ppc64le/conformance/BUILD.bazel b/_out_ppc64le/conformance/BUILD.bazel
+new file mode 100644
+index 000000000..33c8f9fd8
+--- /dev/null
++++ b/_out_ppc64le/conformance/BUILD.bazel
+@@ -0,0 +1,18 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["conformance.go"],
++    importpath = "kubevirt.io/kubevirt/tests/conformance",
++    visibility = ["//visibility:private"],
++)
++
++load("//tests/conformance:def.bzl", "containertag_x_def")
++
++go_binary(
++    name = "conformance",
++    testonly = True,
++    embed = [":go_default_library"],
++    visibility = ["//visibility:public"],
++    x_defs = containertag_x_def(),
++)
+diff --git a/_out_ppc64le/conformance/def.bzl b/_out_ppc64le/conformance/def.bzl
+new file mode 100644
+index 000000000..963360402
+--- /dev/null
++++ b/_out_ppc64le/conformance/def.bzl
+@@ -0,0 +1,18 @@
++# Copyright 2021 The KubeVirt Authors.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++def containertag_x_def():
++    stamp_pkg = "kubevirt.io/kubevirt/tests/conformance"
++    stamp_var = "containerTag"
++    return {"%s.%s" % (stamp_pkg, stamp_var): "{%s}" % stamp_var}
+diff --git a/_out_ppc64le/container-disk-v2alpha/.gitignore b/_out_ppc64le/container-disk-v2alpha/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/container-disk-v2alpha/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/disks-images-provider/BUILD.bazel b/_out_ppc64le/disks-images-provider/BUILD.bazel
+new file mode 100644
+index 000000000..8505f9441
+--- /dev/null
++++ b/_out_ppc64le/disks-images-provider/BUILD.bazel
+@@ -0,0 +1,58 @@
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
++
++genrule(
++    name = "alpine-img",
++    srcs = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": ["@alpine_image_aarch64//file"],
++        "//conditions:default": ["@alpine_image//file"],
++    }),
++    outs = ["images/alpine/disk.img"],
++    cmd = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "mkdir -p images/alpine && cat $(location @alpine_image_aarch64//file) > $@",
++        "//conditions:default": "mkdir -p images/alpine && cat $(location @alpine_image//file) > $@",
++    }),
++)
++
++genrule(
++    name = "custom-img",
++    srcs = [],
++    outs = ["images/custom/disk.img"],
++    cmd = "mkdir -p images/custom && truncate -s 64M disk.img && cat disk.img > $@",
++)
++
++pkg_tar(
++    name = "alpine-tar",
++    srcs = [
++        ":alpine-img",
++    ],
++    package_dir = "images/alpine",
++)
++
++pkg_tar(
++    name = "custom-tar",
++    srcs = [
++        ":custom-img",
++    ],
++    package_dir = "images/custom",
++)
++
++container_image(
++    name = "disks-images-provider-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = "//images:kubevirt-testing-base",
++    directory = "/",
++    entrypoint = ["/entrypoint.sh"],
++    files = ["entrypoint.sh"],
++    tars = [
++        ":alpine-tar",
++        ":custom-tar",
++    ],
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/disks-images-provider/entrypoint.sh b/_out_ppc64le/disks-images-provider/entrypoint.sh
+new file mode 100644
+index 000000000..da310c784
+--- /dev/null
++++ b/_out_ppc64le/disks-images-provider/entrypoint.sh
+@@ -0,0 +1,76 @@
++#!/bin/bash
++#
++# This file is part of the KubeVirt project
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++#
++# Copyright 2018 Red Hat, Inc.
++#
++
++set -euo pipefail
++
++# gracefully handle the TERM signal sent when deleting the daemonset
++trap 'exit' TERM
++SELINUX_TAG=$(ls -Z)
++
++mkdir -p /images/datavolume1 /images/datavolume2 /images/datavolume3
++
++echo "copy all images to host mount directory"
++cp -R /images/* /hostImages/
++echo "make the alpine image ready for parallel use"
++cp -r /hostImages/alpine hostImages/alpine1
++cp -r /hostImages/alpine hostImages/alpine2
++cp -r /hostImages/alpine hostImages/alpine3
++rm -rf /hostImages/alpine
++mkdir -p /local-storage/hotplug-test
++cp -r /hostImages/custom/disk.img /local-storage/hotplug-test/disk.img
++chmod -R 777 /local-storage/hotplug-test
++
++echo "make the custom image ready for parallel use"
++cp -r /hostImages/custom hostImages/custom1
++cp -r /hostImages/custom hostImages/custom2
++cp -r /hostImages/custom hostImages/custom3
++rm -rf /hostImages/custom
++chmod -R 777 /hostImages
++
++# Create a 4Gi blank disk image
++dd if=/dev/zero of=/local-storage/hp_file.img bs=4k count=1024k
++ls -al /local-storage/hp_file.img
++# Put LOOP_DEVICE_HP in /etc/bashrc in order to detach this loop device when the pod stopped.
++LOOP_DEVICE_HP=$(chroot /host losetup --verbose --find --show /mnt/local-storage/hp_file.img)
++echo LOOP_DEVICE_HP=${LOOP_DEVICE_HP} >>/etc/bashrc
++chroot /host mkfs.ext4 $LOOP_DEVICE_HP
++mkdir -p /hostImages/mount_hp
++ls -al /host${LOOP_DEVICE_HP}
++chroot /host mount ${LOOP_DEVICE_HP} /tmp/hostImages/mount_hp
++mkdir -p /host/tmp/hostImages/mount_hp/test
++# When the host is ubuntu, by default, selinux is not used, so chcon is not necessary.
++# If selinux tag is set, use chcon to change /hostImages privileges.
++if [ ${SELINUX_TAG:0:1} != "?" ]; then
++    chcon -Rt svirt_sandbox_file_t /host/tmp/hostImages
++    chcon -R unconfined_u:object_r:svirt_sandbox_file_t:s0 /host/mnt/local-storage/
++fi
++chmod 777 /host/tmp/hostImages/mount_hp
++chmod 777 /host/tmp/hostImages/mount_hp/test
++
++cat /etc/bashrc
++
++# for some reason without sleep, container sometime fails to create the file
++sleep 10
++
++# let the monitoring script know we're done
++echo "done" >/ready
++
++while true; do
++    sleep 60
++done
+diff --git a/_out_ppc64le/example-cloudinit-hook-sidecar/.gitignore b/_out_ppc64le/example-cloudinit-hook-sidecar/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/example-cloudinit-hook-sidecar/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/example-cloudinit-hook-sidecar/.version b/_out_ppc64le/example-cloudinit-hook-sidecar/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/example-cloudinit-hook-sidecar/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/example-cloudinit-hook-sidecar/BUILD.bazel b/_out_ppc64le/example-cloudinit-hook-sidecar/BUILD.bazel
+new file mode 100644
+index 000000000..70bc0a2ef
+--- /dev/null
++++ b/_out_ppc64le/example-cloudinit-hook-sidecar/BUILD.bazel
+@@ -0,0 +1,44 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["cloudinit.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/example-cloudinit-hook-sidecar",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/cloud-init:go_default_library",
++        "//pkg/hooks:go_default_library",
++        "//pkg/hooks/info:go_default_library",
++        "//pkg/hooks/v1alpha2:go_default_library",
++        "//staging/src/kubevirt.io/api/core/v1:go_default_library",
++        "//staging/src/kubevirt.io/client-go/log:go_default_library",
++        "@org_golang_google_grpc//:go_default_library",
++    ],
++)
++
++go_binary(
++    name = "example-cloudinit-hook-sidecar",
++    embed = [":go_default_library"],
++    visibility = ["//visibility:public"],
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "example-cloudinit-hook-sidecar-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "@fedora_aarch64//image",
++        "//conditions:default": "@fedora//image",
++    }),
++    directory = "/",
++    entrypoint = ["/example-cloudinit-hook-sidecar"],
++    files = [":example-cloudinit-hook-sidecar"],
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/example-hook-sidecar/.gitignore b/_out_ppc64le/example-hook-sidecar/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/example-hook-sidecar/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/example-hook-sidecar/.version b/_out_ppc64le/example-hook-sidecar/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/example-hook-sidecar/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/example-hook-sidecar/BUILD.bazel b/_out_ppc64le/example-hook-sidecar/BUILD.bazel
+new file mode 100644
+index 000000000..ae63228d9
+--- /dev/null
++++ b/_out_ppc64le/example-hook-sidecar/BUILD.bazel
+@@ -0,0 +1,46 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["smbios.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/example-hook-sidecar",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/hooks:go_default_library",
++        "//pkg/hooks/info:go_default_library",
++        "//pkg/hooks/v1alpha1:go_default_library",
++        "//pkg/hooks/v1alpha2:go_default_library",
++        "//pkg/virt-launcher/virtwrap/api:go_default_library",
++        "//staging/src/kubevirt.io/api/core/v1:go_default_library",
++        "//staging/src/kubevirt.io/client-go/log:go_default_library",
++        "//vendor/github.com/spf13/pflag:go_default_library",
++        "@org_golang_google_grpc//:go_default_library",
++    ],
++)
++
++go_binary(
++    name = "example-hook-sidecar",
++    embed = [":go_default_library"],
++    visibility = ["//visibility:public"],
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "example-hook-sidecar-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "@fedora_aarch64//image",
++        "//conditions:default": "@fedora//image",
++    }),
++    directory = "/",
++    entrypoint = ["/example-hook-sidecar"],
++    files = [":example-hook-sidecar"],
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/fake-qemu-process/.gitignore b/_out_ppc64le/fake-qemu-process/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/fake-qemu-process/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/fake-qemu-process/.version b/_out_ppc64le/fake-qemu-process/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/fake-qemu-process/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/nfs-server/BUILD.bazel b/_out_ppc64le/nfs-server/BUILD.bazel
+new file mode 100644
+index 000000000..a1185d8ee
+--- /dev/null
++++ b/_out_ppc64le/nfs-server/BUILD.bazel
+@@ -0,0 +1,29 @@
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "nfs-server-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "@nfs-server_aarch64//image",
++        "//conditions:default": "@nfs-server//image",
++    }),
++    ports = [
++        "111/udp",
++        "2049/udp",
++        "32765/udp",
++        "32766/udp",
++        "32767/udp",
++        "111/tcp",
++        "2049/tcp",
++        "32765/tcp",
++        "32766/tcp",
++        "32767/tcp",
++    ],
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/subresource-access-test/.gitignore b/_out_ppc64le/subresource-access-test/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/subresource-access-test/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/subresource-access-test/.version b/_out_ppc64le/subresource-access-test/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/subresource-access-test/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-api/.gitignore b/_out_ppc64le/virt-api/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-api/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-api/.version b/_out_ppc64le/virt-api/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virt-api/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-api/BUILD.bazel b/_out_ppc64le/virt-api/BUILD.bazel
+new file mode 100644
+index 000000000..f64e11791
+--- /dev/null
++++ b/_out_ppc64le/virt-api/BUILD.bazel
+@@ -0,0 +1,52 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["virt-api.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/virt-api",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/monitoring/client/prometheus:go_default_library",
++        "//pkg/monitoring/reflector/prometheus:go_default_library",
++        "//pkg/monitoring/workqueue/prometheus:go_default_library",
++        "//pkg/service:go_default_library",
++        "//pkg/virt-api:go_default_library",
++        "//staging/src/kubevirt.io/client-go/log:go_default_library",
++    ],
++)
++
++load("//vendor/kubevirt.io/client-go/version:def.bzl", "version_x_defs")
++
++go_binary(
++    name = "virt-api",
++    embed = [":go_default_library"],
++    static = "on",
++    visibility = ["//visibility:public"],
++    x_defs = version_x_defs(),
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "version-container",
++    base = "//:passwd-image",
++    directory = "/",
++    files = ["//:get-version"],
++)
++
++container_image(
++    name = "virt-api-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = ":version-container",
++    directory = "/usr/bin/",
++    entrypoint = ["/usr/bin/virt-api"],
++    files = [":virt-api"],
++    user = "1001",
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/virt-api/Dockerfile.slim b/_out_ppc64le/virt-api/Dockerfile.slim
+new file mode 100644
+index 000000000..fb413a5ce
+--- /dev/null
++++ b/_out_ppc64le/virt-api/Dockerfile.slim
+@@ -0,0 +1,9 @@
++FROM quay.io/centos/centos:stream8
++
++COPY ./virt-api-v0.58.0-linux-ppc64le /usr/bin/virt-api
++
++RUN groupadd -g 1001 nonroot-user && useradd -u 1001 -g 1001 -Ms /bin/sh nonroot-user
++
++USER 1001
++
++CMD ["virt-api"]
+diff --git a/_out_ppc64le/virt-chroot/.gitignore b/_out_ppc64le/virt-chroot/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/virt-chroot/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/virt-chroot/.version b/_out_ppc64le/virt-chroot/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virt-chroot/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-controller/.gitignore b/_out_ppc64le/virt-controller/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-controller/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-controller/.version b/_out_ppc64le/virt-controller/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virt-controller/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-controller/BUILD.bazel b/_out_ppc64le/virt-controller/BUILD.bazel
+new file mode 100644
+index 000000000..6b6801cbe
+--- /dev/null
++++ b/_out_ppc64le/virt-controller/BUILD.bazel
+@@ -0,0 +1,50 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["virt-controller.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/virt-controller",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/monitoring/client/prometheus:go_default_library",
++        "//pkg/monitoring/reflector/prometheus:go_default_library",
++        "//pkg/monitoring/workqueue/prometheus:go_default_library",
++        "//pkg/virt-controller/watch:go_default_library",
++    ],
++)
++
++load("//vendor/kubevirt.io/client-go/version:def.bzl", "version_x_defs")
++
++go_binary(
++    name = "virt-controller",
++    embed = [":go_default_library"],
++    static = "on",
++    visibility = ["//visibility:public"],
++    x_defs = version_x_defs(),
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "version-container",
++    base = "//:passwd-image",
++    directory = "/",
++    files = ["//:get-version"],
++)
++
++container_image(
++    name = "virt-controller-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = ":version-container",
++    directory = "/usr/bin/",
++    entrypoint = ["/usr/bin/virt-controller"],
++    files = [":virt-controller"],
++    user = "1001",
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/virt-controller/Dockerfile.slim b/_out_ppc64le/virt-controller/Dockerfile.slim
+new file mode 100644
+index 000000000..d7be6331f
+--- /dev/null
++++ b/_out_ppc64le/virt-controller/Dockerfile.slim
+@@ -0,0 +1,9 @@
++FROM quay.io/centos/centos:stream8
++
++COPY ./virt-controller-v0.58.0-linux-ppc64le /usr/bin/virt-controller
++
++RUN groupadd -g 1001 nonroot-user && useradd -u 1001 -g 1001 -Ms /bin/sh nonroot-user
++
++USER 1001
++
++CMD ["virt-controller"]
+diff --git a/_out_ppc64le/virt-controller/kubernetes.repo b/_out_ppc64le/virt-controller/kubernetes.repo
+new file mode 100644
+index 000000000..5c0938bd8
+--- /dev/null
++++ b/_out_ppc64le/virt-controller/kubernetes.repo
+@@ -0,0 +1,8 @@
++[kubernetes]
++name=Kubernetes
++baseurl=http://yum.kubernetes.io/repos/kubernetes-el7-x86_64
++enabled=1
++gpgcheck=1
++repo_gpgcheck=1
++gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
++       https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+diff --git a/_out_ppc64le/virt-exportproxy/.gitignore b/_out_ppc64le/virt-exportproxy/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-exportproxy/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-exportproxy/Dockerfile.slim b/_out_ppc64le/virt-exportproxy/Dockerfile.slim
+new file mode 100644
+index 000000000..d2ef01db5
+--- /dev/null
++++ b/_out_ppc64le/virt-exportproxy/Dockerfile.slim
+@@ -0,0 +1,9 @@
++FROM quay.io/centos/centos:stream8
++
++COPY ./virt-exportproxy-v0.58.0-linux-ppc64le /usr/bin/virt-exportproxy
++
++RUN groupadd -g 1001 nonroot-user && useradd -u 1001 -g 1001 -Ms /bin/sh nonroot-user
++
++USER 1001
++
++CMD ["virt-exportproxy"]
+diff --git a/_out_ppc64le/virt-exportserver/.gitignore b/_out_ppc64le/virt-exportserver/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-exportserver/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-exportserver/Dockerfile.slim b/_out_ppc64le/virt-exportserver/Dockerfile.slim
+new file mode 100644
+index 000000000..e7a4b47a7
+--- /dev/null
++++ b/_out_ppc64le/virt-exportserver/Dockerfile.slim
+@@ -0,0 +1,9 @@
++FROM quay.io/centos/centos:stream8
++
++COPY ./virt-exportserver-v0.58.0-linux-ppc64le /usr/bin/virt-exportserver
++
++RUN groupadd -g 1001 nonroot-user && useradd -u 1001 -g 1001 -Ms /bin/sh nonroot-user
++
++USER 1001
++
++CMD ["virt-exportserver"]
+diff --git a/_out_ppc64le/virt-freezer/.gitignore b/_out_ppc64le/virt-freezer/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/virt-freezer/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/virt-handler/.gitignore b/_out_ppc64le/virt-handler/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-handler/.version b/_out_ppc64le/virt-handler/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-handler/BUILD.bazel b/_out_ppc64le/virt-handler/BUILD.bazel
+new file mode 100644
+index 000000000..cb3674eaa
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/BUILD.bazel
+@@ -0,0 +1,179 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["virt-handler.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/virt-handler",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/certificates/bootstrap:go_default_library",
++        "//pkg/container-disk:go_default_library",
++        "//pkg/controller:go_default_library",
++        "//pkg/healthz:go_default_library",
++        "//pkg/inotify-informer:go_default_library",
++        "//pkg/monitoring/client/prometheus:go_default_library",
++        "//pkg/monitoring/domainstats/downwardmetrics:go_default_library",
++        "//pkg/monitoring/domainstats/prometheus:go_default_library",
++        "//pkg/monitoring/profiler:go_default_library",
++        "//pkg/monitoring/reflector/prometheus:go_default_library",
++        "//pkg/monitoring/workqueue/prometheus:go_default_library",
++        "//pkg/safepath:go_default_library",
++        "//pkg/service:go_default_library",
++        "//pkg/util:go_default_library",
++        "//pkg/util/ratelimiter:go_default_library",
++        "//pkg/util/tls:go_default_library",
++        "//pkg/virt-config:go_default_library",
++        "//pkg/virt-handler:go_default_library",
++        "//pkg/virt-handler/cache:go_default_library",
++        "//pkg/virt-handler/cmd-client:go_default_library",
++        "//pkg/virt-handler/isolation:go_default_library",
++        "//pkg/virt-handler/migration-proxy:go_default_library",
++        "//pkg/virt-handler/node-labeller:go_default_library",
++        "//pkg/virt-handler/node-labeller/api:go_default_library",
++        "//pkg/virt-handler/rest:go_default_library",
++        "//pkg/virt-handler/seccomp:go_default_library",
++        "//pkg/virt-handler/selinux:go_default_library",
++        "//pkg/virt-handler/vsock:go_default_library",
++        "//pkg/virt-launcher/virtwrap/api:go_default_library",
++        "//pkg/watchdog:go_default_library",
++        "//staging/src/github.com/golang/glog:go_default_library",
++        "//staging/src/kubevirt.io/api/core/v1:go_default_library",
++        "//staging/src/kubevirt.io/client-go/kubecli:go_default_library",
++        "//staging/src/kubevirt.io/client-go/log:go_default_library",
++        "//staging/src/kubevirt.io/client-go/util:go_default_library",
++        "//vendor/github.com/emicklei/go-restful:go_default_library",
++        "//vendor/github.com/spf13/pflag:go_default_library",
++        "//vendor/k8s.io/api/core/v1:go_default_library",
++        "//vendor/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
++        "//vendor/k8s.io/apimachinery/pkg/types:go_default_library",
++        "//vendor/k8s.io/apimachinery/pkg/util/wait:go_default_library",
++        "//vendor/k8s.io/client-go/kubernetes/scheme:go_default_library",
++        "//vendor/k8s.io/client-go/kubernetes/typed/core/v1:go_default_library",
++        "//vendor/k8s.io/client-go/tools/cache:go_default_library",
++        "//vendor/k8s.io/client-go/tools/record:go_default_library",
++        "//vendor/k8s.io/client-go/util/certificate:go_default_library",
++        "//vendor/k8s.io/client-go/util/flowcontrol:go_default_library",
++    ],
++)
++
++load("//vendor/kubevirt.io/client-go/version:def.bzl", "version_x_defs")
++
++go_binary(
++    name = "virt-handler",
++    embed = [":go_default_library"],
++    visibility = ["//visibility:public"],
++    x_defs = version_x_defs(),
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++load("@io_bazel_rules_docker//contrib:group.bzl", "group_entry", "group_file")
++load("@io_bazel_rules_docker//contrib:passwd.bzl", "passwd_entry", "passwd_file")
++load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
++
++passwd_entry(
++    name = "root-user",
++    gid = 0,
++    home = "/root",
++    info = "root",
++    shell = "/bin/bash",
++    uid = 0,
++    username = "root",
++)
++
++passwd_entry(
++    name = "qemu-user",
++    gid = 107,
++    home = "",
++    shell = "/bin/bash",
++    uid = 107,
++    username = "qemu",
++)
++
++passwd_file(
++    name = "passwd",
++    entries = [
++        ":qemu-user",
++        ":root-user",
++    ],
++)
++
++group_entry(
++    name = "qemu-group",
++    gid = 107,
++    groupname = "qemu",
++)
++
++group_entry(
++    name = "root-group",
++    gid = 0,
++    groupname = "root",
++)
++
++group_file(
++    name = "group",
++    entries = [
++        ":qemu-group",
++        ":root-group",
++    ],
++)
++
++pkg_tar(
++    name = "passwd-tar",
++    srcs = [
++        ":group",
++        ":passwd",
++    ],
++    mode = "0644",
++    package_dir = "etc",
++    visibility = ["//visibility:public"],
++)
++
++pkg_tar(
++    name = "nsswitch-tar",
++    srcs = [
++        ":nsswitch.conf",
++    ],
++    mode = "0644",
++    package_dir = "/etc",
++)
++
++container_image(
++    name = "version-container",
++    directory = "/",
++    files = [
++        ":virt_launcher.cil",
++        "//:get-version",
++    ],
++    tars = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": [
++            ":passwd-tar",
++            ":nsswitch-tar",
++            "//rpm:handlerbase_aarch64",
++        ],
++        "//conditions:default": [
++            ":passwd-tar",
++            ":nsswitch-tar",
++            "//rpm:handlerbase_x86_64",
++        ],
++    }),
++)
++
++container_image(
++    name = "virt-handler-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = ":version-container",
++    directory = "/usr/bin/",
++    entrypoint = ["/usr/bin/virt-handler"],
++    files = [
++        ":virt-handler",
++        "//cmd/container-disk-v2alpha:container-disk",
++        "//cmd/virt-chroot",
++    ],
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/virt-handler/Dockerfile.slim b/_out_ppc64le/virt-handler/Dockerfile.slim
+new file mode 100644
+index 000000000..9e406c2e5
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/Dockerfile.slim
+@@ -0,0 +1,19 @@
++FROM quay.io/centos/centos:stream8
++
++RUN yum install -y --allowerasing acl curl vim \
++    coreutils-single glibc-minimal-langpack libcurl-minimal \
++    qemu-img.ppc64le findutils iproute iptables nftables procps-ng selinux-policy selinux-policy-targeted tar util-linux xorriso \
++    systemd
++
++RUN groupadd -g 107 qemu && useradd -u 107 -g 107 -Ms /bin/sh qemu
++
++COPY ./virt-handler-v0.58.0-linux-ppc64le /usr/bin/virt-handler
++COPY ./container-disk-v0.58.0-linux-ppc64le /usr/bin/container-disk
++COPY ./virt-chroot-v0.58.0-linux-ppc64le /usr/bin/virt-chroot
++COPY ./virt_launcher.cil /virt_launcher.cil
++COPY ./ipv4-nat.nft /etc/nftables/ipv4-nat.nft
++COPY ./ipv6-nat.nft /etc/nftables/ipv6-nat.nft
++COPY ./nsswitch.conf /etc/nsswitch.conf
++COPY ./.version /.version
++
++CMD ["virt-handler"]
+diff --git a/_out_ppc64le/virt-handler/ipv4-nat.nft b/_out_ppc64le/virt-handler/ipv4-nat.nft
+new file mode 100644
+index 000000000..95a5f3e01
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/ipv4-nat.nft
+@@ -0,0 +1,6 @@
++table nat {
++    chain prerouting     { type nat hook prerouting priority -100; }
++    chain input          { type nat hook input priority 100; }
++    chain output         { type nat hook output priority -100; }
++    chain postrouting    { type nat hook postrouting priority 100; }
++}
+diff --git a/_out_ppc64le/virt-handler/ipv6-nat.nft b/_out_ppc64le/virt-handler/ipv6-nat.nft
+new file mode 100644
+index 000000000..26fc372a0
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/ipv6-nat.nft
+@@ -0,0 +1,6 @@
++table ip6 nat {
++    chain prerouting     { type nat hook prerouting priority -100; }
++    chain input          { type nat hook input priority 100; }
++    chain output         { type nat hook output priority -100; }
++    chain postrouting    { type nat hook postrouting priority 100; }
++}
+diff --git a/_out_ppc64le/virt-handler/nsswitch.conf b/_out_ppc64le/virt-handler/nsswitch.conf
+new file mode 100644
+index 000000000..726753d5b
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/nsswitch.conf
+@@ -0,0 +1,14 @@
++passwd:     files
++shadow:     files
++group:      files
++hosts:      files dns myhostname
++services:   files
++netgroup:
++automount:  files
++aliases:    files
++ethers:     files
++gshadow:    files
++networks:   files dns
++protocols:  files
++publickey:  files
++rpc:        files
+diff --git a/_out_ppc64le/virt-handler/virt_launcher.cil b/_out_ppc64le/virt-handler/virt_launcher.cil
+new file mode 100644
+index 000000000..c5e8caf2f
+--- /dev/null
++++ b/_out_ppc64le/virt-handler/virt_launcher.cil
+@@ -0,0 +1,54 @@
++; This is the custom SELinux policy for virt-launcher. This file is hopefully temporary.
++; Applications running in regular container usually have container_t as an SELinux type.
++; However, some applications running in virt-launcher (namely libvirtd) need more permissions.
++(block virt_launcher
++    ;
++    ; In the virt_launcher block, everything we define will be prefixed with "virt_launcher."
++    ; Therefore, every mention of "process" really means "virt_launcher.process".
++    ;
++    ; virt_launcher.process is defined as a run-able domain type
++    (type process)
++    (roletype system_r process)
++    (typeattributeset domain (process))
++    ;
++    ; Giving virt_launcher.process the same attributes as container_t
++    (typeattributeset container_domain (process))
++    (typeattributeset container_net_domain (process))
++    (typeattributeset svirt_sandbox_domain (process))
++    (typeattributeset sandbox_net_domain (process))
++    ; This one is particularly important, without it the type would not be mcs-constrained.
++    ; MCS is leveraged by container_t and others, like us, to prevent cross-pod communication.
++    (typeattributeset mcs_constrained_type (process))
++    ;
++    ;
++    ; Adding the permissions missing from container_t to be able to run programs like libvirtd
++    ; The list of "allow" rules should be as short and as documented as possible
++    ;
++    ;
++    ; Allowing virt-launcher to read files under /proc
++    ; This is needed by libvirt/qemu to read at least /proc/cpuinfo and /proc/uptime
++    ; The permission below already exists on container_t, but not on its parent attribute container_domain
++    ; This is therefore not blocking the switch to container_t
++    (allow process proc_type (file (open read)))
++    ;
++    ; Allowing libvirtd to relay network-related debug messages
++    ; libvirtd seems to run fine without it.
++    ; There is already a dontaudit covering it, removing the permission would not trigger AVCs.
++    ; However, without this permission, there would be a lot of warnings poluting the logs.
++    ; The permission below already exists on container_t, but not on its parent attribute container_domain
++    ; This is therefore not blocking the switch to container_t
++    (allow process self (netlink_audit_socket (nlmsg_relay)))
++    ;
++    ; Allowing tun sockets to be relabelled from "virt_launcher.process" to itself.
++    ; That might seem useless, but when libvirtd adds a tun socket to a network multiqueue,
++    ;   that triggers a relabelling, even if the label is already correct.
++    ; "relabelfrom" and "relabelto" were added upstream and won't be necessary in the future.
++    ; It is unclear if "attach_queue" is actually needed
++    ; The permission below already exists on container_t, but not on its parent attribute container_domain
++    ; This is therefore not blocking the switch to container_t
++    (allow process self (tun_socket (relabelfrom relabelto attach_queue)))
++    ;
++    ; This is needed for passt. This is the only thing for which this policy is actually needed.
++    ; The policy will be removed from here once it will be installed via the passt package.
++    (allow process tmpfs_t (filesystem (mount)))
++)
+diff --git a/_out_ppc64le/virt-launcher-monitor/.gitignore b/_out_ppc64le/virt-launcher-monitor/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher-monitor/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/virt-launcher/.gitignore b/_out_ppc64le/virt-launcher/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-launcher/.version b/_out_ppc64le/virt-launcher/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-launcher/BUILD.bazel b/_out_ppc64le/virt-launcher/BUILD.bazel
+new file mode 100644
+index 000000000..654fb7d6d
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/BUILD.bazel
+@@ -0,0 +1,201 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++load("@bazeldnf//:deps.bzl", "xattrs")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["virt-launcher.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/virt-launcher",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/cloud-init:go_default_library",
++        "//pkg/config:go_default_library",
++        "//pkg/container-disk:go_default_library",
++        "//pkg/ephemeral-disk:go_default_library",
++        "//pkg/hooks:go_default_library",
++        "//pkg/hotplug-disk:go_default_library",
++        "//pkg/ignition:go_default_library",
++        "//pkg/util:go_default_library",
++        "//pkg/virt-handler/cmd-client:go_default_library",
++        "//pkg/virt-launcher:go_default_library",
++        "//pkg/virt-launcher/metadata:go_default_library",
++        "//pkg/virt-launcher/notify-client:go_default_library",
++        "//pkg/virt-launcher/virtwrap:go_default_library",
++        "//pkg/virt-launcher/virtwrap/agent-poller:go_default_library",
++        "//pkg/virt-launcher/virtwrap/api:go_default_library",
++        "//pkg/virt-launcher/virtwrap/cli:go_default_library",
++        "//pkg/virt-launcher/virtwrap/cmd-server:go_default_library",
++        "//pkg/virt-launcher/virtwrap/util:go_default_library",
++        "//staging/src/kubevirt.io/api/core/v1:go_default_library",
++        "//staging/src/kubevirt.io/client-go/log:go_default_library",
++        "//vendor/github.com/spf13/pflag:go_default_library",
++        "//vendor/k8s.io/apimachinery/pkg/types:go_default_library",
++        "//vendor/k8s.io/apimachinery/pkg/util/wait:go_default_library",
++        "//vendor/k8s.io/apimachinery/pkg/watch:go_default_library",
++        "//vendor/libvirt.org/go/libvirt:go_default_library",
++    ],
++)
++
++load("//vendor/kubevirt.io/client-go/version:def.bzl", "version_x_defs")
++
++go_binary(
++    name = "virt-launcher",
++    embed = [":go_default_library"],
++    visibility = ["//visibility:public"],
++    x_defs = version_x_defs(),
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++load("@io_bazel_rules_docker//contrib:group.bzl", "group_entry", "group_file")
++load("@io_bazel_rules_docker//contrib:passwd.bzl", "passwd_entry", "passwd_file")
++load("@rules_pkg//:pkg.bzl", "pkg_tar")
++
++pkg_tar(
++    name = "virt-launcher-tar",
++    srcs = [
++        "node-labeller/node-labeller.sh",
++        ":virt-launcher",
++        "//cmd/container-disk-v2alpha:container-disk",
++        "//cmd/virt-freezer",
++        "//cmd/virt-launcher-monitor",
++        "//cmd/virt-probe",
++    ],
++    package_dir = "/usr/bin",
++)
++
++xattrs(
++    name = "setcaps",
++    capabilities = {
++        "/usr/bin/virt-launcher": [
++            "cap_net_bind_service",
++        ],
++        "/usr/bin/virt-launcher-monitor": [
++            "cap_net_bind_service",
++        ],
++    },
++    tar = ":virt-launcher-tar",
++)
++
++passwd_entry(
++    name = "root-user",
++    gid = 0,
++    home = "/root",
++    info = "root",
++    shell = "/bin/bash",
++    uid = 0,
++    username = "root",
++)
++
++group_entry(
++    name = "qemu-group",
++    gid = 107,
++    groupname = "qemu",
++)
++
++group_entry(
++    name = "root-group",
++    gid = 0,
++    groupname = "root",
++)
++
++group_file(
++    name = "group",
++    entries = [
++        ":qemu-group",
++        ":root-group",
++    ],
++)
++
++passwd_entry(
++    name = "qemu-user",
++    gid = 107,
++    home = "/home/qemu",
++    shell = "/bin/bash",
++    uid = 107,
++    username = "qemu",
++)
++
++passwd_file(
++    name = "passwd",
++    entries = [
++        ":qemu-user",
++        ":root-user",
++    ],
++)
++
++pkg_tar(
++    name = "libvirt-config",
++    srcs = [
++        ":qemu.conf",
++        ":virtqemud.conf",
++    ],
++    package_dir = "/etc/libvirt",
++)
++
++pkg_tar(
++    name = "passwd-tar",
++    srcs = [
++        ":group",
++        ":passwd",
++    ],
++    mode = "0644",
++    package_dir = "etc",
++    visibility = ["//visibility:public"],
++)
++
++pkg_tar(
++    name = "nsswitch-tar",
++    srcs = [
++        ":nsswitch.conf",
++    ],
++    mode = "0644",
++    package_dir = "/etc",
++)
++
++# Workaround for https://github.com/moby/moby/issues/44106
++# Need to create the directory upfront, otherwise it gets assigned wrong
++# permissions when unpacked.
++pkg_tar(
++    name = "qemu-kvm-modules-dir-tar",
++    empty_dirs = [
++        "usr/lib64/qemu-kvm",
++    ],
++    mode = "0755",
++    owner = "0.0",
++)
++
++container_image(
++    name = "version-container",
++    directory = "/",
++    files = ["//:get-version"],
++    tars = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": [
++            ":libvirt-config",
++            ":passwd-tar",
++            ":nsswitch-tar",
++            ":qemu-kvm-modules-dir-tar",
++            "//rpm:launcherbase_aarch64",
++        ],
++        "//conditions:default": [
++            ":libvirt-config",
++            ":passwd-tar",
++            ":nsswitch-tar",
++            ":qemu-kvm-modules-dir-tar",
++            "//rpm:launcherbase_x86_64",
++        ],
++    }),
++)
++
++container_image(
++    name = "virt-launcher-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = ":version-container",
++    entrypoint = ["/usr/bin/virt-launcher"],
++    tars = [":setcaps"],
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/virt-launcher/Dockerfile.slim b/_out_ppc64le/virt-launcher/Dockerfile.slim
+new file mode 100644
+index 000000000..59f599a93
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/Dockerfile.slim
+@@ -0,0 +1,23 @@
++FROM quay.io/centos/centos:stream8
++
++RUN yum install -y --allowerasing acl curl vim-minimal \
++    coreutils-single glibc-minimal-langpack libcurl-minimal \
++    libvirt-client.ppc64le \
++    libvirt-daemon-driver-qemu.ppc64le \
++    qemu-kvm-core.ppc64le \
++    ethtool findutils iptables nftables nmap-ncat procps-ng selinux-policy selinux-policy-targeted tar xorriso \
++    daxctl-libs systemd
++
++RUN setcap 'cap_net_bind_service=+ep' /usr/libexec/qemu-kvm
++
++RUN unlink /usr/bin/nc && ln -s /usr/bin/ncat /usr/bin/nc
++
++COPY ./virt-launcher-v0.58.0-linux-ppc64le /usr/bin/virt-launcher
++COPY ./nsswitch.conf /etc/nsswitch.conf
++COPY ./virtqemud.conf /etc/libvirt/virtqemud.conf
++COPY ./qemu.conf /etc/libvirt/qemu.conf
++COPY ./container-disk-v0.58.0-linux-ppc64le /usr/bin/container-disk
++COPY ./node-labeller/node-labeller.sh /usr/bin/node-labeller.sh
++COPY ./virt-freezer-v0.58.0-linux-ppc64le /usr/bin/virt-freezer
++COPY ./virt-launcher-monitor-v0.58.0-linux-ppc64le /usr/bin/virt-launcher-monitor
++COPY ./virt-probe-v0.58.0-linux-ppc64le /usr/bin/virt-probe
+diff --git a/_out_ppc64le/virt-launcher/node-labeller/node-labeller.sh b/_out_ppc64le/virt-launcher/node-labeller/node-labeller.sh
+new file mode 100644
+index 000000000..e1883432a
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/node-labeller/node-labeller.sh
+@@ -0,0 +1,29 @@
++#!/bin/bash
++
++set -e
++
++KVM_MINOR=$(grep -w 'kvm' /proc/misc | cut -f 1 -d' ')
++VIRTTYPE=qemu
++
++if [ ! -e /dev/kvm ] && [ -n "$KVM_MINOR" ]; then
++  mknod /dev/kvm c 10 $KVM_MINOR
++fi
++
++if [ -e /dev/kvm ]; then
++    chmod o+rw /dev/kvm
++    VIRTTYPE=kvm
++fi
++
++if [ -e /dev/sev ]; then
++  # QEMU requires RW access to query SEV capabilities
++  chmod o+rw /dev/sev
++fi
++
++virtqemud -d
++
++virsh domcapabilities --machine q35 --arch x86_64 --virttype $VIRTTYPE > /var/lib/kubevirt-node-labeller/virsh_domcapabilities.xml
++
++cp -r /usr/share/libvirt/cpu_map /var/lib/kubevirt-node-labeller
++
++virsh domcapabilities --machine q35 --arch x86_64 --virttype $VIRTTYPE | virsh hypervisor-cpu-baseline --features /dev/stdin --machine q35 --arch x86_64 --virttype $VIRTTYPE > /var/lib/kubevirt-node-labeller/supported_features.xml
++virsh capabilities > /var/lib/kubevirt-node-labeller/capabilities.xml
+diff --git a/_out_ppc64le/virt-launcher/nsswitch.conf b/_out_ppc64le/virt-launcher/nsswitch.conf
+new file mode 100644
+index 000000000..726753d5b
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/nsswitch.conf
+@@ -0,0 +1,14 @@
++passwd:     files
++shadow:     files
++group:      files
++hosts:      files dns myhostname
++services:   files
++netgroup:
++automount:  files
++aliases:    files
++ethers:     files
++gshadow:    files
++networks:   files dns
++protocols:  files
++publickey:  files
++rpc:        files
+diff --git a/_out_ppc64le/virt-launcher/qemu.conf b/_out_ppc64le/virt-launcher/qemu.conf
+new file mode 100644
+index 000000000..25f5856b0
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/qemu.conf
+@@ -0,0 +1,10 @@
++stdio_handler = "logd"
++vnc_listen = "0.0.0.0"
++vnc_tls = 0
++vnc_sasl = 0
++user = "qemu"
++group = "qemu"
++dynamic_ownership = 1
++remember_owner = 0
++namespaces = [ ]
++cgroup_controllers = [ ]
+diff --git a/_out_ppc64le/virt-launcher/virtqemud.conf b/_out_ppc64le/virt-launcher/virtqemud.conf
+new file mode 100644
+index 000000000..168c0ebe4
+--- /dev/null
++++ b/_out_ppc64le/virt-launcher/virtqemud.conf
+@@ -0,0 +1,3 @@
++listen_tls = 0
++listen_tcp = 0
++log_outputs = "1:stderr"
+diff --git a/_out_ppc64le/virt-operator/.gitignore b/_out_ppc64le/virt-operator/.gitignore
+new file mode 100644
+index 000000000..9fb3612a7
+--- /dev/null
++++ b/_out_ppc64le/virt-operator/.gitignore
+@@ -0,0 +1,2 @@
++*v0.58.0-linux-ppc64le
++*.tar
+diff --git a/_out_ppc64le/virt-operator/.version b/_out_ppc64le/virt-operator/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virt-operator/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/virt-operator/BUILD.bazel b/_out_ppc64le/virt-operator/BUILD.bazel
+new file mode 100644
+index 000000000..e80104598
+--- /dev/null
++++ b/_out_ppc64le/virt-operator/BUILD.bazel
+@@ -0,0 +1,50 @@
++load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
++
++go_library(
++    name = "go_default_library",
++    srcs = ["virt-operator.go"],
++    importpath = "kubevirt.io/kubevirt/cmd/virt-operator",
++    visibility = ["//visibility:private"],
++    deps = [
++        "//pkg/monitoring/client/prometheus:go_default_library",
++        "//pkg/monitoring/reflector/prometheus:go_default_library",
++        "//pkg/monitoring/workqueue/prometheus:go_default_library",
++        "//pkg/virt-operator:go_default_library",
++    ],
++)
++
++go_binary(
++    name = "virt-operator",
++    embed = [":go_default_library"],
++    static = "on",
++    visibility = ["//visibility:public"],
++)
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "version-container",
++    base = "//:passwd-image",
++    directory = "/",
++    files = ["//:get-version"],
++)
++
++container_image(
++    name = "virt-operator-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = ":version-container",
++    directory = "/usr/bin/",
++    entrypoint = ["/usr/bin/virt-operator"],
++    files = [
++        ":virt-operator",
++        "//tools/csv-generator",
++    ],
++    user = "1001",
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/virt-operator/Dockerfile.slim b/_out_ppc64le/virt-operator/Dockerfile.slim
+new file mode 100644
+index 000000000..39d8a463c
+--- /dev/null
++++ b/_out_ppc64le/virt-operator/Dockerfile.slim
+@@ -0,0 +1,10 @@
++FROM quay.io/centos/centos:stream8
++
++COPY ./virt-operator-v0.58.0-linux-ppc64le /usr/bin/virt-operator
++COPY ./csv-generator-v0.58.0-linux-ppc64le /usr/bin/csv-generator
++
++RUN groupadd -g 1001 nonroot-user && useradd -u 1001 -g 1001 -Ms /bin/sh nonroot-user
++
++USER 1001
++
++CMD ["virt-operator"]
+diff --git a/_out_ppc64le/virt-probe/.gitignore b/_out_ppc64le/virt-probe/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/virt-probe/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/virtctl/.gitignore b/_out_ppc64le/virtctl/.gitignore
+new file mode 100644
+index 000000000..fbe66d2a6
+--- /dev/null
++++ b/_out_ppc64le/virtctl/.gitignore
+@@ -0,0 +1 @@
++*v0.58.0-linux-ppc64le
+diff --git a/_out_ppc64le/virtctl/.version b/_out_ppc64le/virtctl/.version
+new file mode 100644
+index 000000000..8b1378917
+--- /dev/null
++++ b/_out_ppc64le/virtctl/.version
+@@ -0,0 +1 @@
++
+diff --git a/_out_ppc64le/vm-killer/BUILD.bazel b/_out_ppc64le/vm-killer/BUILD.bazel
+new file mode 100644
+index 000000000..e06127612
+--- /dev/null
++++ b/_out_ppc64le/vm-killer/BUILD.bazel
+@@ -0,0 +1,15 @@
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "vm-killer-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = "//images:kubevirt-testing-base",
++    user = "1001",
++    visibility = ["//visibility:public"],
++)
+diff --git a/_out_ppc64le/winrmcli/BUILD.bazel b/_out_ppc64le/winrmcli/BUILD.bazel
+new file mode 100644
+index 000000000..aaa8195e1
+--- /dev/null
++++ b/_out_ppc64le/winrmcli/BUILD.bazel
+@@ -0,0 +1,26 @@
++load("@bazel_gazelle//:def.bzl", "gazelle")
++
++gazelle(name = "gazelle")
++
++load(
++    "@io_bazel_rules_docker//container:container.bzl",
++    "container_image",
++)
++
++container_image(
++    name = "winrmcli-image",
++    architecture = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "arm64",
++        "//conditions:default": "amd64",
++    }),
++    base = select({
++        "@io_bazel_rules_go//go/platform:linux_arm64": "@fedora_aarch64//image",
++        "//conditions:default": "@fedora//image",
++    }),
++    directory = "/usr/bin",
++    files = [
++        "@com_github_masterzen_winrmcli//:winrm-cli",
++        "@com_github_packer_community_winrmcp//:winrmcp",
++    ],
++    visibility = ["//visibility:public"],
++)
+diff --git a/hack/build-copy-artifacts.sh b/hack/build-copy-artifacts.sh
+index fe6d57a4b..cda0d086d 100755
+--- a/hack/build-copy-artifacts.sh
++++ b/hack/build-copy-artifacts.sh
+@@ -22,6 +22,8 @@ set -e
+ source hack/common.sh
+ source hack/config.sh
+ 
++echo "HEREIT"
++
+ if [ $# -eq 0 ]; then
+     args=$docker_images
+ else
+diff --git a/hack/build-go.sh b/hack/build-go.sh
+index b45378fe8..3e4c2d8e0 100755
+--- a/hack/build-go.sh
++++ b/hack/build-go.sh
+@@ -44,6 +44,12 @@ case ${PLATFORM} in
+ x86_64* | i?86_64* | amd64*)
+     ARCH="amd64"
+     ;;
++s390* | s390x*)
++    ARCH="s390x"
++    ;;
++ppc64* | ppc64le*)
++    ARCH="ppc64le"
++    ;;
+ aarch64* | arm64*)
+     ARCH="arm64"
+     ;;
+@@ -66,10 +72,11 @@ if [ $# -eq 0 ]; then
+         )
+     else
+         (
+-            go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./pkg/...
++	    go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./pkg/...
+             GO111MODULE=off go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./staging/src/kubevirt.io/...
+         )
+-        (
++        (   
++	    echo "go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./tests/..."
+             go $target -tags "${KUBEVIRT_GO_BUILD_TAGS}" ./tests/...
+         )
+     fi
+diff --git a/hack/build-manifests.sh b/hack/build-manifests.sh
+index b2dab4f18..1bf24e87e 100755
+--- a/hack/build-manifests.sh
++++ b/hack/build-manifests.sh
+@@ -33,6 +33,8 @@ rm -rf "${TESTS_OUT_DIR}/tools"
+ mkdir -p "${TESTS_OUT_DIR}/tools"
+ templator=${TESTS_OUT_DIR}/tools/manifest-templator
+ 
++echo ${KUBEVIRT_NO_BAZEL}
++
+ if [ "${KUBEVIRT_NO_BAZEL}" != "true" ]; then
+     bazel run \
+         --config=${HOST_ARCHITECTURE} \
+diff --git a/hack/builder/Dockerfile b/hack/builder/Dockerfile
+index fe95be70a..a12673fa6 100644
+--- a/hack/builder/Dockerfile
++++ b/hack/builder/Dockerfile
+@@ -1,13 +1,14 @@
+ FROM quay.io/centos/centos:stream8
+ 
+-ARG SONOBUOY_ARCH
+-ARG BAZEL_ARCH
++ARG KUBEVIRT_NO_BAZEL false
++ARG SONOBUOY_ARCH x86_64
++ARG BAZEL_ARCH x86_64
+ 
+-ENV BAZEL_VERSION=4.2.1
++ENV BAZEL_VERSION=5.2.0
+ ENV GIMME_GO_VERSION=1.17.8
+ ENV GRADLE_VERSION=6.6
+ ENV OPERATOR_COURIER_VERSION=2.1.11
+-ENV SONOBUOY_VERSION=0.19.0
++ENV SONOBUOY_VERSION=0.56.9
+ ENV GOLANGCI_LINT_VERSION=v1.46.2
+ 
+ ENV KUBEVIRT_CREATE_BAZELRCS=false
+@@ -128,7 +129,12 @@ COPY entrypoint.sh /entrypoint.sh
+ 
+ COPY create_bazel_cache_rcs.sh /create_bazel_cache_rcs.sh
+ 
+-RUN curl -L -o /usr/bin/bazel https://github.com/bazelbuild/bazel/releases/download/${BAZEL_VERSION}/bazel-${BAZEL_VERSION}-linux-${BAZEL_ARCH} && \
+-    chmod u+x /usr/bin/bazel
++COPY bazel-${BAZEL_ARCH} /usr/bin/bazel
++
++RUN if [ "${KUBEVIRT_NO_BAZEL}" != "true" ] && [ "${BAZEL_ARCH}" = "x86_64" ]; then \ 
++rm -f /usr/bin/bazel && curl -L -o /usr/bin/bazel https://github.com/bazelbuild/bazel/releases/download/"${BAZEL_VERSION}"/bazel-"${BAZEL_VERSION}"-linux-"${BAZEL_ARCH}"; \
++fi
++
++RUN chmod u+x /usr/bin/bazel
+ 
+ ENTRYPOINT [ "/entrypoint.sh" ]
+diff --git a/hack/builder/bazel-ppc64le b/hack/builder/bazel-ppc64le
+new file mode 100755
+index 000000000..7aabb2961
+Binary files /dev/null and b/hack/builder/bazel-ppc64le differ
+diff --git a/hack/builder/build.sh b/hack/builder/build.sh
+index d6f982351..1ed4be5fc 100755
+--- a/hack/builder/build.sh
++++ b/hack/builder/build.sh
+@@ -10,6 +10,8 @@ SCRIPT_DIR="$(
+     pwd
+ )"
+ 
++HOST_ARCH="$(uname -m)"
++
+ # shellcheck source=hack/builder/version.sh
+ . "${SCRIPT_DIR}/version.sh"
+ 
+@@ -18,8 +20,10 @@ SCRIPT_DIR="$(
+ # packages on Fedora or by having already run this script earlier,
+ # then we shouldn't alter the existing configuration to avoid the
+ # risk of possibly breaking it
+-if ! grep -E '^enabled$' /proc/sys/fs/binfmt_misc/qemu-aarch64 2>/dev/null; then
+-    ${KUBEVIRT_CRI} run --rm --privileged multiarch/qemu-user-static --reset -p yes
++if [ ${HOST_ARCH} = "x86_64" ]; then 
++ if ! grep -E '^enabled$' /proc/sys/fs/binfmt_misc/qemu-aarch64 2>/dev/null; then
++     ${KUBEVIRT_CRI} run --rm --privileged multiarch/qemu-user-static --reset -p yes
++ fi
+ fi
+ 
+ for ARCH in ${ARCHITECTURES}; do
+@@ -34,5 +38,5 @@ for ARCH in ${ARCHITECTURES}; do
+         ;;
+     esac
+     ${KUBEVIRT_CRI} pull --platform="linux/${ARCH}" quay.io/centos/centos:stream8
+-    ${KUBEVIRT_CRI} build --platform="linux/${ARCH}" -t "quay.io/kubevirt/builder:${VERSION}-${ARCH}" --build-arg SONOBUOY_ARCH=${sonobuoy_arch} --build-arg BAZEL_ARCH=${bazel_arch} -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
++    ${KUBEVIRT_CRI} build --platform="linux/${ARCH}" -t "r.awan.app/library/kubevirt/builder:${VERSION}-${ARCH}" --build-arg SONOBUOY_ARCH=${sonobuoy_arch} --build-arg BAZEL_ARCH=${bazel_arch} -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
+ done
+diff --git a/hack/builder/version.sh b/hack/builder/version.sh
+index e2c693190..181ec65c5 100644
+--- a/hack/builder/version.sh
++++ b/hack/builder/version.sh
+@@ -1,3 +1,4 @@
+-VERSION=$(date +"%y%m%d%H%M")-$(git rev-parse --short HEAD)
++#VERSION=$(date +"%y%m%d%H%M")-$(git rev-parse --short HEAD)
++VERSION=v0.58.0
+ # TODO: reenable ppc64le when new builds are available
+-ARCHITECTURES="amd64 arm64"
++ARCHITECTURES="ppc64le"
+diff --git a/hack/dockerized b/hack/dockerized
+index bb75e0fb4..14d83ccf8 100755
+--- a/hack/dockerized
++++ b/hack/dockerized
+@@ -12,7 +12,13 @@ fi
+ 
+ fail_if_cri_bin_missing
+ 
+-KUBEVIRT_BUILDER_IMAGE="quay.io/kubevirt/builder:2209141252-da37250e4"
++ARCH=$(uname -m)
++
++KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.58.0"
++
++if [ "${ARCH}" != "x86_64" ]; then
++	KUBEVIRT_BUILDER_IMAGE="r.awan.app/library/kubevirt/builder:v0.58.0-${ARCH}"
++fi
+ 
+ SYNC_OUT=${SYNC_OUT:-true}
+ 
+diff --git a/hack/go-build-functests.sh b/hack/go-build-functests.sh
+index 24779d122..04f526262 100755
+--- a/hack/go-build-functests.sh
++++ b/hack/go-build-functests.sh
+@@ -27,6 +27,12 @@ case ${PLATFORM} in
+ x86_64* | i?86_64* | amd64*)
+     ARCH="amd64"
+     ;;
++s390* | s390x*)
++    ARCH="s390x"
++    ;;
++ppc64* | ppc64le*)
++    ARCH="ppc64le"
++    ;;
+ aarch64* | arm64*)
+     ARCH="arm64"
+     ;;
+diff --git a/pkg/virt-handler/node-labeller/kvm-caps-info-plugin_ppc64le.go b/pkg/virt-handler/node-labeller/kvm-caps-info-plugin_ppc64le.go
+new file mode 100644
+index 000000000..fa5b48799
+--- /dev/null
++++ b/pkg/virt-handler/node-labeller/kvm-caps-info-plugin_ppc64le.go
+@@ -0,0 +1,27 @@
++//go:build ppc64le
++
++/*
++ * This file is part of the KubeVirt project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Copyright 2021 Red Hat, Inc.
++ *
++ */
++
++package nodelabeller
++
++func getCapLabels() []string {
++	exposedCaps := []string{}
++	return exposedCaps
++}
+diff --git a/pkg/virt-handler/node-labeller/kvm-caps-info-plugin_s390x.go b/pkg/virt-handler/node-labeller/kvm-caps-info-plugin_s390x.go
+new file mode 100644
+index 000000000..2bb72c808
+--- /dev/null
++++ b/pkg/virt-handler/node-labeller/kvm-caps-info-plugin_s390x.go
+@@ -0,0 +1,27 @@
++//go:build s390x
++
++/*
++ * This file is part of the KubeVirt project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Copyright 2021 Red Hat, Inc.
++ *
++ */
++
++package nodelabeller
++
++func getCapLabels() []string {
++	exposedCaps := []string{}
++	return exposedCaps
++}
+diff --git a/pkg/virt-handler/setsched.go b/pkg/virt-handler/setsched.go
+index 5f2e7b229..1ef746dff 100644
+--- a/pkg/virt-handler/setsched.go
++++ b/pkg/virt-handler/setsched.go
+@@ -1,4 +1,4 @@
+-//go:build (linux && amd64) || (linux && arm64)
++//go:build (linux && amd64) || (linux && arm64) || (linux && ppc64le) || (linux && s390x)
+ 
+ package virthandler
+ 

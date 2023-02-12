@@ -1,3 +1,4 @@
-VERSION=$(date +"%y%m%d%H%M")-$(git rev-parse --short HEAD)
+#VERSION=$(date +"%y%m%d%H%M")-$(git rev-parse --short HEAD)
+VERSION=v0.58.0
 # TODO: reenable ppc64le when new builds are available
-ARCHITECTURES="amd64 arm64"
+ARCHITECTURES="ppc64le"
